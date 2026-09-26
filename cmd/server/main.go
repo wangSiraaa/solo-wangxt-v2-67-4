@@ -38,6 +38,12 @@ func main() {
 	}
 
 	svc := registry.NewService(store)
+	runnerCtx, stopRunner := context.WithCancel(context.Background())
+	defer stopRunner()
+	if err := svc.RecoverInterruptedReplays(runnerCtx); err != nil {
+		log.Fatalf("recover interrupted replays: %v", err)
+	}
+	svc.StartBackgroundRunner(runnerCtx, 500*time.Millisecond)
 	pattern, handler := svc.Handler()
 
 	mux := http.NewServeMux()

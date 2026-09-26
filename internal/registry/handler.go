@@ -13,6 +13,14 @@ const (
 	ProcedureCheckCompatibility = "/registry.v1.Registry/CheckCompatibility"
 	ProcedureDeclareConsumer    = "/registry.v1.Registry/DeclareConsumer"
 	ProcedureListVersions       = "/registry.v1.Registry/ListVersions"
+	ProcedureCreateCorpusSet    = "/registry.v1.Registry/CreateCorpusSet"
+	ProcedureUpdateCorpusSet    = "/registry.v1.Registry/UpdateCorpusSet"
+	ProcedureSealCorpusSet      = "/registry.v1.Registry/SealCorpusSet"
+	ProcedureDeleteCorpusDraft  = "/registry.v1.Registry/DeleteCorpusDraft"
+	ProcedureGetCorpusSet       = "/registry.v1.Registry/GetCorpusSet"
+	ProcedureListCorpusSets     = "/registry.v1.Registry/ListCorpusSets"
+	ProcedureStartReplay        = "/registry.v1.Registry/StartReplay"
+	ProcedureGetReplay          = "/registry.v1.Registry/GetReplay"
 )
 
 // jsonCodec speaks application/json for plain Go structs, so the service
@@ -37,5 +45,21 @@ func (s *Service) Handler() (string, http.Handler) {
 		ProcedureDeclareConsumer, s.DeclareConsumer, connect.WithCodec(jsonCodec{})))
 	mux.Handle(ProcedureListVersions, connect.NewUnaryHandler(
 		ProcedureListVersions, s.ListVersions, connect.WithCodec(jsonCodec{})))
+	mux.Handle(ProcedureCreateCorpusSet, connect.NewUnaryHandler(
+		ProcedureCreateCorpusSet, s.CreateCorpusSet, connect.WithCodec(jsonCodec{})))
+	mux.Handle(ProcedureUpdateCorpusSet, connect.NewUnaryHandler(
+		ProcedureUpdateCorpusSet, s.UpdateCorpusSet, connect.WithCodec(jsonCodec{})))
+	mux.Handle(ProcedureSealCorpusSet, connect.NewUnaryHandler(
+		ProcedureSealCorpusSet, s.SealCorpusSet, connect.WithCodec(jsonCodec{})))
+	mux.Handle(ProcedureDeleteCorpusDraft, connect.NewUnaryHandler(
+		ProcedureDeleteCorpusDraft, s.DeleteCorpusDraft, connect.WithCodec(jsonCodec{})))
+	mux.Handle(ProcedureGetCorpusSet, connect.NewUnaryHandler(
+		ProcedureGetCorpusSet, s.GetCorpusSet, connect.WithCodec(jsonCodec{})))
+	mux.Handle(ProcedureListCorpusSets, connect.NewUnaryHandler(
+		ProcedureListCorpusSets, s.ListCorpusSets, connect.WithCodec(jsonCodec{})))
+	mux.Handle(ProcedureStartReplay, connect.NewUnaryHandler(
+		ProcedureStartReplay, s.StartReplay, connect.WithCodec(jsonCodec{})))
+	mux.Handle(ProcedureGetReplay, connect.NewUnaryHandler(
+		ProcedureGetReplay, s.GetReplay, connect.WithCodec(jsonCodec{})))
 	return "/registry.v1.Registry/", mux
 }

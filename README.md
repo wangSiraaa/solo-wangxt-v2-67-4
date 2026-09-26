@@ -13,6 +13,7 @@ cmd/compatcheck   命令行：回归用例运行器 + 两棵 proto 树的临时�
 internal/schema   protocompile 封装：编译 → 描述符集 → 内容哈希 → 重新加载
 internal/compat   兼容性判定核心（字段号复用 / 保留删除 / 类型变化 / 枚举默认值 / 样例载荷）
 internal/registry ConnectRPC 处理器、Store 接口、PostgreSQL 实现、内存实现
+internal/replay    版本化语料回放：wire/JSON 解码、字段丢失、JSON 行为差异、内容指纹
 internal/regress  文件型回归用例运行器（CLI 与 go test 共用）
 testdata/cases    回归案例：嵌套导入、oneof 迁移、同名不同包……
 api/registry/v1   服务契约（ConnectRPC，当前手写 handler + JSON codec，无需 codegen）
@@ -20,10 +21,14 @@ api/registry/v1   服务契约（ConnectRPC，当前手写 handler + JSON codec�
 
 - **解析**：`github.com/bufbuild/protocompile`，嵌套导入、菱形导入、well-known
   types 均由编译器解析；判断在 `protoreflect` 描述符上进行。
-- **传输**：ConnectRPC（connect 协议 + JSON codec），四个方法：
-  `RegisterVersion` / `CheckCompatibility` / `DeclareConsumer` / `ListVersions`。
+- **传输**：ConnectRPC（connect 协议 + JSON codec），现有方法包括
+  `RegisterVersion` / `CheckCompatibility` / `DeclareConsumer` / `ListVersions`，
+  以及语料方法 `CreateCorpusSet` / `UpdateCorpusSet` / `SealCorpusSet` /
+  `DeleteCorpusDraft` / `GetCorpusSet` / `ListCorpusSets` / `StartReplay` /
+  `GetReplay`。
 - **存储**：PostgreSQL 存包、不可变版本（描述符集 + 内容哈希）、兼容性报告、
-  使用方声明（consumer declarations）。`STORE=memory` 可本地冒烟（不持久化）。
+  使用方声明、封存语料快照以及幂等/可恢复回放结果。`STORE=memory` 可本地冒烟
+  （进程内保存，重启不保留语料和回放结果）。
 
 ## 判定模型
 
@@ -94,6 +99,56 @@ curl -s localhost:8080/registry.v1.Registry/DeclareConsumer -H 'Content-Type: ap
 curl -s localhost:8080/registry.v1.Registry/CheckCompatibility -H 'Content-Type: application/json' -d '{
   "package": "acme.pay", "base_version": "v1", "candidate_version": "v2", "consumer": "ledger"
 }'
+```
+
+## 版本化语料库与批量回放
+
+语料按 `(package, corpus name, version)` 管理。语料集可以从已封存的上一版克隆，
+随后通过 `add_or_update` / `delete_keys` 提交增量：
+
+- **样例内容寻址**：同一个包内，消息全名、wire/JSON 编码、规范化载荷和期望结果
+  相同的样例共享 SHA-256 指纹；语义相同但格式不同的 JSON 也视为同一份内容。
+- **封存不可变**：`SEALED` 版本不能增删改或删除；封存时会复制 membership 快照，
+  后续删除新草稿不会影响旧版语料和历史回放。
+- **期望与摘要**：每个样例保存原始 JSON 文本或 base64 wire、`expected_result`
+  （成功/失败、错误片段、可选 JSON 期望）以及自动生成的内容摘要。
+- **安全回放**：回放键由语料版本和 schema 版本派生；同一组输入重复
+  `StartReplay` 只返回同一份结果。工作项执行前 claim，完成项幂等覆盖保护；
+  进程重启会释放旧 lease，只续跑 `PENDING/RUNNING` 项。
+- **差异汇总**：结果逐项给出 `SUCCESS/FAILED`、无法在目标 schema 表达的字段路径、
+  proto-JSON 行为差异（例如 int32 → int64 后数字变字符串）以及解码后的 JSON。
+
+```bash
+cat >/tmp/create-corpus.json <<'JSON'
+{
+  "package": "acme.pay",
+  "name": "invoices",
+  "add_or_update": [
+    {"key":"invoice-json","message":"acme.pay.Invoice","encoding":"json","data":"{\"id\":\"i-1\",\"total\":5}"},
+    {"key":"invoice-wire","message":"acme.pay.Invoice","encoding":"wire","data":"CgJpLTACGAAAAA=="}
+  ]
+}
+JSON
+
+curl -s localhost:8080/registry.v1.Registry/CreateCorpusSet \
+  -H 'Content-Type: application/json' --data-binary @/tmp/create-corpus.json
+curl -s localhost:8080/registry.v1.Registry/SealCorpusSet -H 'Content-Type: application/json' \
+  -d '{"package":"acme.pay","name":"invoices","version":1}'
+curl -s localhost:8080/registry.v1.Registry/StartReplay -H 'Content-Type: application/json' -d '{
+  "package":"acme.pay", "corpus_name":"invoices", "corpus_version":1, "schema_version":"v2"
+}'
+curl -s localhost:8080/registry.v1.Registry/GetReplay -H 'Content-Type: application/json' -d '{
+  "package":"acme.pay", "corpus_name":"invoices", "corpus_version":1, "schema_version":"v2"
+}'
+```
+
+对应 CLI：
+
+```bash
+compatcheck corpus create -package acme.pay -name invoices -file /tmp/samples.json
+compatcheck corpus seal   -package acme.pay -name invoices -version 1
+compatcheck replay start  -package acme.pay -name invoices -corpus-version 1 -schema-version v2 -wait
+compatcheck replay get    -package acme.pay -name invoices -corpus-version 1 -schema-version v2
 ```
 
 ## 命令行回归

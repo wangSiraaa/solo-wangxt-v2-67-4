@@ -12,9 +12,17 @@ import (
 // PostgreSQL store. It backs unit tests and local dry-runs.
 type MemStore struct {
 	mu        sync.Mutex
-	versions  map[string]map[string]*Version // package -> version -> record
-	reports   []StoredReport
-	consumers map[string]map[string]*ConsumerDecl // package -> consumer -> decl
+	versions      map[string]map[string]*Version // package -> version -> record
+	reports       []StoredReport
+	consumers     map[string]map[string]*ConsumerDecl // package -> consumer -> decl
+
+	corpusSamples   map[string]map[string]*CorpusSample
+	corpusSampleIDs map[int64]*CorpusSample
+	nextCorpusSampleID int64
+	corpusSets      map[string]map[string]map[int]*CorpusSet
+	memberships     map[int64]map[string]*CorpusMembership
+	nextCorpusSetID int64
+	replays         map[string]*memReplay
 }
 
 func NewMemStore() *MemStore {

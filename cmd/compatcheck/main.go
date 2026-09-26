@@ -29,6 +29,8 @@ func main() {
 		os.Exit(runCases(os.Args[2:]))
 	case "check":
 		os.Exit(checkTrees(os.Args[2:]))
+	case "corpus", "replay":
+		os.Exit(runCorpusCLI(os.Args[2:]))
 	default:
 		usage()
 		os.Exit(2)
@@ -40,6 +42,8 @@ func usage() {
   compatcheck run <cases-dir>                 run all regression cases under a directory
   compatcheck check -old DIR -new DIR [-samples FILE.json] [-format json|text]
                                               compare two proto trees directly
+  compatcheck corpus ...                       create/seal/query versioned corpora
+  compatcheck replay start|get ...             start/query a corpus replay
 `)
 }
 

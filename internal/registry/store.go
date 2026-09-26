@@ -47,8 +47,11 @@ type StoredReport struct {
 	CreatedAt   time.Time
 }
 
-// Store persists packages, versions, consumer declarations and reports.
+// Store persists packages, versions, consumer declarations, reports,
+// versioned corpora and idempotent replay results.
 type Store interface {
+	CorpusStore
+
 	// PutVersion registers an immutable version. It returns created=false
 	// when the exact same content was already registered (idempotent
 	// retry), and ErrVersionConflict when the version exists with

@@ -28,6 +28,23 @@ service Registry {
 
   // ListVersions returns every registered version of a package.
   rpc ListVersions(ListVersionsRequest) returns (ListVersionsResponse);
+
+  // CreateCorpusSet creates a new draft corpus, optionally cloning a sealed
+  // base and applying an add/update/delete delta.
+  rpc CreateCorpusSet(CreateCorpusSetRequest) returns (CorpusSetResponse);
+  // UpdateCorpusSet mutates a draft. Re-uploading the same content is a
+  // no-op; sealed versions cannot be changed.
+  rpc UpdateCorpusSet(UpdateCorpusSetRequest) returns (CorpusSetResponse);
+  rpc SealCorpusSet(SealCorpusSetRequest) returns (CorpusSetResponse);
+  rpc DeleteCorpusDraft(DeleteCorpusDraftRequest) returns (DeleteCorpusDraftResponse);
+  rpc GetCorpusSet(GetCorpusSetRequest) returns (CorpusSetResponse);
+  rpc ListCorpusSets(ListCorpusSetsRequest) returns (ListCorpusSetsResponse);
+
+  // StartReplay creates the unique replay for a sealed corpus/schema pair,
+  // or returns the existing one. Work is resumable and item results are
+  // idempotent.
+  rpc StartReplay(StartReplayRequest) returns (ReplayResponse);
+  rpc GetReplay(GetReplayRequest) returns (ReplayResponse);
 }
 
 message ProtoFile {
@@ -126,4 +143,151 @@ message VersionMeta {
 message ListVersionsResponse {
   string package = 1;
   repeated VersionMeta versions = 2;
+}
+
+message ExpectedResult {
+  string outcome = 1;        // success (default) or failure
+  string error_contains = 2; // optional substring for expected failures
+  string json = 3;           // optional canonical JSON expectation
+}
+
+message CorpusSampleInput {
+  string key = 1;             // stable key within a corpus; defaults to content fingerprint
+  string name = 2;
+  string message = 3;
+  string encoding = 4;        // json or wire
+  string data = 5;            // JSON text, or base64 for wire
+  ExpectedResult expected_result = 6;
+  string content_summary = 7; // optional override; normally service-generated
+}
+
+message CorpusSample {
+  string key = 1;
+  string name = 2;
+  string message = 3;
+  string encoding = 4;
+  string data = 5;
+  ExpectedResult expected_result = 6;
+  string content_summary = 7;
+  string fingerprint = 8;
+  string created_at = 9;
+}
+
+message CorpusSetMeta {
+  string name = 1;
+  int32 version = 2;
+  string status = 3; // DRAFT or SEALED
+  optional int32 base_version = 4;
+  int32 total = 5;
+  string created_at = 6;
+  string sealed_at = 7;
+}
+
+message CreateCorpusSetRequest {
+  string package = 1;
+  string name = 2;
+  int32 version = 3;      // default: append after latest
+  int32 base_version = 4; // default: latest sealed; -1 means no base
+  repeated CorpusSampleInput add_or_update = 5;
+  repeated string delete_keys = 6;
+}
+
+message UpdateCorpusSetRequest {
+  string package = 1;
+  string name = 2;
+  int32 version = 3;
+  repeated CorpusSampleInput add_or_update = 4;
+  repeated string delete_keys = 5;
+}
+
+message SealCorpusSetRequest {
+  string package = 1;
+  string name = 2;
+  int32 version = 3;
+}
+
+message DeleteCorpusDraftRequest {
+  string package = 1;
+  string name = 2;
+  int32 version = 3;
+}
+
+message DeleteCorpusDraftResponse {
+  bool deleted = 1;
+}
+
+message GetCorpusSetRequest {
+  string package = 1;
+  string name = 2;
+  int32 version = 3; // 0 means latest
+}
+
+message ListCorpusSetsRequest {
+  string package = 1;
+  string name = 2;
+}
+
+message CorpusSetResponse {
+  CorpusSetMeta meta = 1;
+  repeated CorpusSample samples = 2;
+}
+
+message ListCorpusSetsResponse {
+  string package = 1;
+  repeated CorpusSetMeta sets = 2;
+}
+
+message StartReplayRequest {
+  string package = 1;
+  string corpus_name = 2;
+  int32 corpus_version = 3; // 0 means latest sealed
+  string schema_version = 4;
+}
+
+message GetReplayRequest {
+  string replay_id = 1;
+  string package = 2;
+  string corpus_name = 3;
+  int32 corpus_version = 4;
+  string schema_version = 5;
+}
+
+message ReplaySummary {
+  string replay_id = 1;
+  string package = 2;
+  string corpus_name = 3;
+  int32 corpus_version = 4;
+  string schema_version = 5;
+  string status = 6; // PENDING, RUNNING, COMPLETE or FAILED
+  int32 total = 7;
+  int32 succeeded = 8;
+  int32 failed = 9;
+  int32 missing_field_items = 10;
+  int32 json_diff_items = 11;
+  string started_at = 12;
+  string updated_at = 13;
+  string error = 14;
+}
+
+message JSONDiff {
+  string path = 1;
+  string expected = 2;
+  string actual = 3;
+}
+
+message ReplayItem {
+  string key = 1;
+  string name = 2;
+  string message = 3;
+  string encoding = 4;
+  string status = 5; // SUCCESS or FAILED
+  string error = 6;
+  repeated string missing_fields = 7;
+  repeated JSONDiff json_diffs = 8;
+  string decoded_json = 9;
+}
+
+message ReplayResponse {
+  ReplaySummary summary = 1;
+  repeated ReplayItem items = 2;
 }
