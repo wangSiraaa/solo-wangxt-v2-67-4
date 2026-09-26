@@ -11,11 +11,7 @@ import (
 // TestHTTPEndToEnd drives the ConnectRPC handler over real HTTP with the
 // connect protocol's JSON codec.
 func TestHTTPEndToEnd(t *testing.T) {
-	svc := NewService(NewMemStore())
-	pattern, handler := svc.Handler()
-	mux := http.NewServeMux()
-	mux.Handle(pattern, handler)
-	srv := httptest.NewServer(mux)
+	srv := httptest.NewServer(NewService(NewMemStore()).Handler())
 	defer srv.Close()
 
 	post := func(procedure string, body any) (int, map[string]any) {

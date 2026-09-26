@@ -15,6 +15,7 @@ type MemStore struct {
 	versions  map[string]map[string]*Version // package -> version -> record
 	reports   []StoredReport
 	consumers map[string]map[string]*ConsumerDecl // package -> consumer -> decl
+	c         *memCorpusState
 }
 
 func NewMemStore() *MemStore {

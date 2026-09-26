@@ -10,8 +10,10 @@
 ```
 cmd/server        ConnectRPC 服务入口（纯后端，无管理页面）
 cmd/compatcheck   命令行：回归用例运行器 + 两棵 proto 树的临时比对
+cmd/corpusctl     命令行：语料集创建/封存、发起回放、查询结果、新旧 schema 差异对比
 internal/schema   protocompile 封装：编译 → 描述符集 → 内容哈希 → 重新加载
 internal/compat   兼容性判定核心（字段号复用 / 保留删除 / 类型变化 / 枚举默认值 / 样例载荷）
+internal/corpus   单 schema 批量回放引擎（解码 / 字段丢失 / JSON 行为差异 / 双回放对比）
 internal/registry ConnectRPC 处理器、Store 接口、PostgreSQL 实现、内存实现
 internal/regress  文件型回归用例运行器（CLI 与 go test 共用）
 testdata/cases    回归案例：嵌套导入、oneof 迁移、同名不同包……
@@ -22,6 +24,7 @@ api/registry/v1   服务契约（ConnectRPC，当前手写 handler + JSON codec�
   types 均由编译器解析；判断在 `protoreflect` 描述符上进行。
 - **传输**：ConnectRPC（connect 协议 + JSON codec），四个方法：
   `RegisterVersion` / `CheckCompatibility` / `DeclareConsumer` / `ListVersions`。
+  另有 `registry.v1.Corpus` 十个方法，负责版本化语料库与批量回放（见下）。
 - **存储**：PostgreSQL 存包、不可变版本（描述符集 + 内容哈希）、兼容性报告、
   使用方声明（consumer declarations）。`STORE=memory` 可本地冒烟（不持久化）。
 
@@ -52,6 +55,54 @@ api/registry/v1   服务契约（ConnectRPC，当前手写 handler + JSON codec�
 - **样例载荷**：提交者可附 `samples`（json 文本或 base64 wire），服务用新旧描述符
   分别解析并比对确定性 wire 字节与 protojson 输出，差异定位到
   `acme.Msg.lines[2].amount` 这样的字段路径；无法验证的样例记 WARN，不算通过。
+
+## 版本化语料库与批量回放
+
+样例不仅能在发布时做新旧双 schema 比对，还可以沉淀成**按版本管理的语料库**，
+之后选择任意一个 schema 版本对整组语料做批量回放。
+
+- **内容寻址**：每个样例在包内按 `(message, encoding, 规范化 payload, 期望)` 的
+  SHA-256 摘要唯一标识。JSON 先做结构规范化，所以排版/键序不同的相同内容、以及
+  重复上传都不会产生第二条样例。样例保存原始 wire（base64）或 JSON 文本、期望结果
+  （`status: ok|decode_error`、期望的规范化 JSON）。
+- **语料集版本**：语料按 `(package, corpus, version)` 管理。新版本只能基于一个
+  **已封存**版本，用 `add`/`remove` 做增量；只有最新的 draft 可改，`seal` 之后
+  永久不可变（更新、删除一律 `failed_precondition`）。删除 draft 只是打
+  `deleted` 墓碑：版本号不复用，封存历史和历史回放完全不受影响。
+- **回放结果逐项独立**：每个样例在选定 schema 下单独解码，分别汇总
+  成功（OK）、解码失败（DECODE_FAILED）、字段丢失（FIELD_LOST，wire 的未知字段号
+  和 JSON 的未知键，定位到 `acme.M.lines[2].#5` 这样的路径）、JSON 行为差异
+  （JSON_DIFF，提交 JSON 与规范化 protojson 的结构化差异，如 int64 加引号、枚举动名），
+  以及期望是否满足（EXPECTATION_MISMATCH）。单个坏样例（坏 base64、消息不存在）
+  不会影响其余样例完成。
+- **安全重试**：发起回放可带 `replay_key`；缺省时由
+  `(包, 语料, 语料版本, schema 版本)` 派生稳定键——同一输入键全局只有一份结果。
+  执行采用 `pending → claimed → completed` 状态机加租约（`FOR UPDATE SKIP LOCKED`，
+  崩溃后过期租约可被回收）。进程中断重启后从未完成项续跑，已完成项绝不重复执行，
+  重复完成同一项会被拒绝。
+- **可追溯对比**：同一封存语料对新旧两个 schema 版本各回放一次，`CompareReplays`
+  按样例摘要对齐，给出稳定的差异汇总（新增解码失败、新增/消失的丢失字段与 JSON
+  差异路径、回归项/修复项）。回放项在启动时快照载荷，因此之后删除 draft 或增删
+  样例都不改变历史回放。
+
+接口（`registry.v1.Corpus`）：`CreateCorpus` / `UpdateCorpus` / `SealCorpus` /
+`GetCorpus` / `ListCorpora` / `DeleteCorpusDraft` / `StartReplay` / `GetReplay` /
+`ListReplays` / `CompareReplays`。
+
+```bash
+# 1) 上传样例（数组或 {"samples":[...]}），创建 draft
+corpusctl upload -pkg acme.evt -corpus events samples.json
+# 基于封存 v1 增量出新 draft：-add/ -remove 用摘要引用既有样例
+corpusctl upload -pkg acme.evt -corpus events -base 1 more.json
+corpusctl update -pkg acme.evt -corpus events -remove <digest>
+corpusctl seal   -pkg acme.evt -corpus events          # 封存后不可变
+# 2) 对同一封存语料分别用新旧 schema 回放
+corpusctl replay -pkg acme.evt -corpus events -version 1 -schema v1
+corpusctl replay -pkg acme.evt -corpus events -version 1 -schema v2
+# 3) 稳定可追溯的差异对比
+corpusctl compare -pkg acme.evt -old 1 -new 2
+corpusctl result  -pkg acme.evt -id 1                  # 查询逐项结果
+```
 
 ## 使用方声明
 
@@ -96,11 +147,22 @@ curl -s localhost:8080/registry.v1.Registry/CheckCompatibility -H 'Content-Type:
 }'
 ```
 
-## 命令行回归
+## 命令行
 
 ```bash
+# 兼容性回归与临时比对
 go run ./cmd/compatcheck run testdata/cases     # 全部回归案例
 go run ./cmd/compatcheck check -old A -new B -format text   # 临时比对两棵 proto 树
+
+# 版本化语料库与批量回放（默认指向 http://localhost:8080，可用 REGISTRY_ADDR 覆盖）
+go run ./cmd/corpusctl upload  -pkg P -corpus C [-base N] samples.json
+go run ./cmd/corpusctl update  -pkg P -corpus C [-add a,b] [-remove d]
+go run ./cmd/corpusctl seal    -pkg P -corpus C
+go run ./cmd/corpusctl list    -pkg P
+go run ./cmd/corpusctl replay  -pkg P -corpus C -version N -schema V [-key K]
+go run ./cmd/corpusctl result  -pkg P -id N
+go run ./cmd/corpusctl compare -pkg P -old N1 -new N2
+
 go test ./...                                    # 单元测试 + 同一套回归案例
 ```
 
@@ -114,4 +176,10 @@ go test ./...                                    # 单元测试 + 同一套回�
 ```bash
 go test ./...                    # 全部（PostgreSQL 集成测试在无 DATABASE_URL 时跳过）
 DATABASE_URL=postgres://... go test ./internal/registry/ -run TestPGStore
+DATABASE_URL=postgres://... go test ./internal/registry/ -run TestPGCorpusReplay
 ```
+
+语料库验收由 `internal/registry/corpus_service_test.go`（内存存储）与
+`pgcorpus_test.go`（真实 PostgreSQL）覆盖：相同内容重复上传不产生新样例、封存后
+修改被拒绝、混合 wire/JSON 部分失败不影响其余项、中断重启不重复已完成项、同一语料
+对新旧 schema 给出稳定可追溯差异、删除草稿不影响历史回放。

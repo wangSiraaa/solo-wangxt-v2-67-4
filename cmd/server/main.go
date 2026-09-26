@@ -24,32 +24,32 @@ import (
 func main() {
 	// STORE=memory runs the service without PostgreSQL (local smoke tests
 	// only; nothing is persisted). Default is the PostgreSQL store.
-	var store registry.Store
 	if os.Getenv("STORE") == "memory" {
 		log.Printf("STORE=memory: using in-memory store, data is not persisted")
-		store = registry.NewMemStore()
-	} else {
-		store = mustPGStore()
+		runServer(registry.NewMemStore())
+		return
 	}
+	runServer(registry.NewPGStore(mustPGDB()))
+}
 
+func runServer(store registry.FullStore) {
 	addr := os.Getenv("LISTEN_ADDR")
 	if addr == "" {
 		addr = ":8080"
 	}
 
 	svc := registry.NewService(store)
-	pattern, handler := svc.Handler()
-
-	mux := http.NewServeMux()
-	mux.Handle(pattern, handler)
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
+	corpusSvc := registry.NewCorpusService(store)
+	h := svc.NewRootMux(corpusSvc, map[string]http.HandlerFunc{
+		"/healthz": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("ok"))
+		},
 	})
 
 	srv := &http.Server{
 		Addr:    addr,
-		Handler: h2c.NewHandler(mux, &http2.Server{}),
+		Handler: h2c.NewHandler(h, &http2.Server{}),
 	}
 
 	go func() {
@@ -68,7 +68,7 @@ func main() {
 	log.Printf("stopped")
 }
 
-func mustPGStore() registry.Store {
+func mustPGDB() *sql.DB {
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
 		log.Fatal("DATABASE_URL is required (e.g. postgres://postgres:postgres@localhost:5432/registry?sslmode=disable), or set STORE=memory for a non-persistent smoke run")
@@ -86,5 +86,5 @@ func mustPGStore() registry.Store {
 		log.Fatalf("apply schema: %v", err)
 	}
 	log.Printf("database ready, schema applied")
-	return registry.NewPGStore(db)
+	return db
 }

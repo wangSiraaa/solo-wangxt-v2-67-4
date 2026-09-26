@@ -30,6 +30,43 @@ service Registry {
   rpc ListVersions(ListVersionsRequest) returns (ListVersionsResponse);
 }
 
+// Corpus manages versioned sample corpora and replays them against a
+// chosen schema version. Samples are content-addressed per package;
+// corpus set versions are immutable once sealed; replays are resumable
+// and idempotent by replay key.
+service Corpus {
+  // CreateCorpus opens a new draft, optionally derived from a sealed base
+  // version with add/remove. Identical sample content never creates a
+  // second sample. If a draft already exists it is returned untouched.
+  rpc CreateCorpus(CreateCorpusRequest) returns (CorpusResponse);
+
+  // UpdateCorpus changes the open draft (samples, digest add/remove,
+  // note). Sealed versions reject every update.
+  rpc UpdateCorpus(UpdateCorpusRequest) returns (CorpusResponse);
+
+  // SealCorpus freezes the draft; it becomes immutable forever.
+  rpc SealCorpus(SealCorpusRequest) returns (CorpusResponse);
+
+  rpc GetCorpus(GetCorpusRequest) returns (CorpusResponse);
+  rpc ListCorpora(ListCorporaRequest) returns (ListCorporaResponse);
+
+  // DeleteCorpusDraft tombstones the open draft. Sealed versions and
+  // historical replays are never affected.
+  rpc DeleteCorpusDraft(DeleteCorpusDraftRequest) returns (DeleteCorpusDraftResponse);
+
+  // StartReplay replays a sealed corpus set against one schema version.
+  // The replay key is idempotent: repeating it resumes the same run and
+  // never redoes completed items.
+  rpc StartReplay(StartReplayRequest) returns (StartReplayResponse);
+
+  rpc GetReplay(GetReplayRequest) returns (GetReplayResponse);
+  rpc ListReplays(ListReplaysRequest) returns (ListReplaysResponse);
+
+  // CompareReplays aligns two completed runs by sample digest and returns
+  // the stable old-vs-new difference summary.
+  rpc CompareReplays(CompareReplaysRequest) returns (CompareReplaysResponse);
+}
+
 message ProtoFile {
   string path = 1;
   string content = 2;
@@ -126,4 +163,200 @@ message VersionMeta {
 message ListVersionsResponse {
   string package = 1;
   repeated VersionMeta versions = 2;
+}
+
+// --- corpus service messages ---
+
+message Expectation {
+  string status = 1; // "" | "ok" | "decode_error"
+  string json = 2;   // expected canonical protojson rendering
+}
+
+message CorpusSample {
+  string name = 1;
+  string message = 2;  // fully-qualified message name
+  string encoding = 3; // "json" or "wire"
+  string data = 4;     // JSON text, or base64 wire bytes
+  Expectation expectation = 5;
+}
+
+message FieldDiff {
+  string path = 1;
+  string old = 2;
+  string new = 3;
+}
+
+message ItemResult {
+  string digest = 1;
+  string name = 2;
+  string message = 3;
+  string encoding = 4;
+  bool decode_ok = 5;
+  string status = 6; // OK | DECODE_FAILED | FIELD_LOST | JSON_DIFF | EXPECTATION_MISMATCH
+  repeated string lost_fields = 7;
+  repeated FieldDiff json_diffs = 8;
+  optional bool expectation_matched = 9;
+  string wire_hex = 10;
+  string canonical_json = 11;
+  string error = 12;
+}
+
+message ReplaySummary {
+  int32 total = 1;
+  int32 ok = 2;
+  int32 decode_failed = 3;
+  int32 field_lost = 4;
+  int32 json_diffs = 5;
+  int32 expectation_mismatched = 6;
+  int32 items_with_lost_fields = 7;
+}
+
+message CreateCorpusRequest {
+  string package = 1;
+  string corpus = 2;
+  int32 base_version = 3;
+  string note = 4;
+  repeated CorpusSample samples = 5;
+  repeated string add = 6;
+  repeated string remove = 7;
+}
+
+message UpdateCorpusRequest {
+  string package = 1;
+  string corpus = 2;
+  string note = 3;
+  repeated CorpusSample samples = 4;
+  repeated string add = 5;
+  repeated string remove = 6;
+}
+
+message CorpusMeta {
+  string package = 1;
+  string corpus = 2;
+  int32 version = 3;
+  string status = 4; // draft | sealed | deleted
+  string note = 5;
+  int32 sample_count = 6;
+  repeated string digests = 7;
+  string created_at = 8;
+  string sealed_at = 9;
+}
+
+message CorpusResponse {
+  CorpusMeta corpus = 1;
+  repeated string added_sample_digests = 2;
+  repeated string already_seen = 3;
+  bool already_existed = 4;
+}
+
+message SealCorpusRequest { string package = 1; string corpus = 2; }
+
+message GetCorpusRequest {
+  string package = 1;
+  string corpus = 2;
+  int32 version = 3;
+}
+
+message ListCorporaRequest { string package = 1; }
+message ListCorporaResponse {
+  string package = 1;
+  repeated CorpusMeta corpora = 2;
+}
+
+message DeleteCorpusDraftRequest { string package = 1; string corpus = 2; }
+message DeleteCorpusDraftResponse { bool deleted = 1; }
+
+message StartReplayRequest {
+  string package = 1;
+  string corpus = 2;
+  int32 corpus_version = 3;
+  string schema_version = 4;
+  string replay_key = 5;
+}
+
+message ReplayMeta {
+  int64 id = 1;
+  string package = 2;
+  string replay_key = 3;
+  string corpus = 4;
+  int32 corpus_version = 5;
+  string schema_version = 6;
+  string status = 7; // running | completed | failed
+  int32 total = 8;
+  int32 completed = 9;
+  ReplaySummary summary = 10;
+  string created_at = 11;
+  string updated_at = 12;
+}
+
+message StartReplayResponse {
+  ReplayMeta replay = 1;
+  bool already_existed = 2;
+  repeated ItemResult items = 3;
+}
+
+message GetReplayRequest {
+  string package = 1;
+  int64 replay_id = 2;
+  string replay_key = 3;
+}
+
+message GetReplayResponse {
+  ReplayMeta replay = 1;
+  repeated ItemResult items = 2;
+}
+
+message ListReplaysRequest {
+  string package = 1;
+  string corpus = 2;
+}
+
+message ListReplaysResponse {
+  string package = 1;
+  repeated ReplayMeta replays = 2;
+}
+
+message ItemComparison {
+  string digest = 1;
+  string name = 2;
+  string message = 3;
+  string encoding = 4;
+  bool changed = 5;
+  ItemResult old = 6;
+  ItemResult new = 7;
+  bool regressed = 8;
+  repeated string paths_added = 9;
+  repeated string paths_removed = 10;
+}
+
+message ComparisonSummary {
+  int32 total_items = 1;
+  int32 changed_items = 2;
+  int32 regressed_items = 3;
+  int32 fixed_items = 4;
+  int32 new_decode_failures = 5;
+  int32 fixed_decode_failures = 6;
+  int32 new_lost_field_paths = 7;
+  int32 fixed_lost_field_paths = 8;
+  int32 new_json_diff_paths = 9;
+  int32 fixed_json_diff_paths = 10;
+}
+
+message Comparison {
+  string old_replay_id = 1;
+  string new_replay_id = 2;
+  string old_schema_version = 3;
+  string new_schema_version = 4;
+  ComparisonSummary summary = 5;
+  repeated ItemComparison items = 6;
+}
+
+message CompareReplaysRequest {
+  string package = 1;
+  int64 old_replay_id = 2;
+  int64 new_replay_id = 3;
+}
+
+message CompareReplaysResponse {
+  Comparison comparison = 1;
 }
